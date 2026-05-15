@@ -12,9 +12,9 @@
 - [x] Implement Shared Memory Ring Buffer (TX/RX)
 
 ## Phase 3: User-mode Daemon Development (Rust / Tokio)
-- [ ] Implement memory mapping from driver in Rust
-- [ ] Create Toki-based async TCP Server
-- [ ] Implement fast frame decoder/encoder for URBs
+- [x] Implement memory mapping from driver in Rust
+- [x] Create Toki-based async TCP Server
+- [x] Implement fast frame decoder/encoder for URBs
 
 ## Phase 4: Linux/WSL2 Client Development (Rust)
 - [ ] Implement Linux vhci-hcd protocol adapter
