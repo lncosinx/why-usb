@@ -21,7 +21,7 @@
 - [x] Implement Toki-based network client to connect to Server
 
 ## Phase 5: Verification & Testing
-- [ ] Basic connectivity test (e.g., USB Mouse)
-- [ ] High throughput test (e.g., USB 3.0 Flash drive)
-- [ ] High frequency concurrency test (e.g., Webcam)
-- [ ] Memory leak & BSOD stability verification
+- [x] Basic connectivity test (e.g., USB Mouse)
+- [x] High throughput test (e.g., USB 3.0 Flash drive)
+- [x] High frequency concurrency test (e.g., Webcam)
+- [x] Memory leak & BSOD stability verification
