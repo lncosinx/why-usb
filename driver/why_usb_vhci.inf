@@ -1,0 +1,50 @@
+;
+; why_usb_vhci.inf
+;
+
+[Version]
+Signature="$WINDOWS NT$"
+Class=USB
+ClassGuid={36FC9E60-C465-11CF-8056-444553540000}
+Provider=%ManufacturerName%
+CatalogFile=why_usb_vhci.cat
+DriverVer= ; TODO: set DriverVer in stampinf property pages
+
+[DestinationDirs]
+DefaultDestDir = 12
+
+[SourceDisksNames]
+1 = %DiskName%,,,""
+
+[SourceDisksFiles]
+why_usb_vhci.sys  = 1,,
+
+[Manufacturer]
+%ManufacturerName%=Standard,NT$ARCH$
+
+[Standard.NT$ARCH$]
+%why_usb_vhci.DeviceDesc%=why_usb_vhci_Device, Root\why_usb_vhci
+
+[why_usb_vhci_Device.NT]
+CopyFiles=Drivers_Dir
+
+[Drivers_Dir]
+why_usb_vhci.sys
+
+[why_usb_vhci_Device.NT.Services]
+AddService = why_usb_vhci,%SPSVCINST_ASSOCSERVICE%, why_usb_vhci_Service_Inst
+
+[why_usb_vhci_Service_Inst]
+DisplayName    = %why_usb_vhci.SVCDESC%
+ServiceType    = 1               ; SERVICE_KERNEL_DRIVER
+StartType      = 3               ; SERVICE_DEMAND_START
+ErrorControl   = 1               ; SERVICE_ERROR_NORMAL
+ServiceBinary  = %12%\why_usb_vhci.sys
+LoadOrderGroup = Extended Base
+
+[Strings]
+SPSVCINST_ASSOCSERVICE= 0x00000002
+ManufacturerName="why_usb_vhci"
+DiskName = "why_usb_vhci Installation Disk"
+why_usb_vhci.DeviceDesc = "why_usb Virtual Host Controller"
+why_usb_vhci.SVCDESC = "why_usb_vhci Service"

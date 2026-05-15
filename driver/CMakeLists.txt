@@ -4,6 +4,8 @@ project(why_usb_vhci CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
+# Build only vhci.cpp for the Linux Mock because device.cpp and driver.cpp contain
+# hard dependency on <wdf.h> and <ntddk.h> which are exclusively Windows.
 add_library(why_usb_vhci STATIC src/vhci.cpp)
 target_include_directories(why_usb_vhci PUBLIC inc)
 

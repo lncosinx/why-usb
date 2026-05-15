@@ -1,29 +1,26 @@
 #include "vhci.h"
 #include "ring_buffer.h"
 
-// Do not include standard libraries like iostream or memory
-// as they are not available in the Windows kernel mode context.
-
 // Global context pointer to simulate driver extension
 static SharedMemoryContext* g_SharedMemory = nullptr;
 
 #ifdef _WIN32
-// We provide dummy declarations here just to make the Linux mock build pass
-// In a real Windows build, these would be provided by WDF headers
-extern "C" {
-    NTSTATUS DriverEntry(void* DriverObject, void* RegistryPath) {
-        // Initialize WDF driver object here
-        return init_vhci_driver();
-    }
-}
+// In a real Windows build, this uses ExAllocatePoolWithTag
+#include <ntddk.h>
+#define VHCI_POOL_TAG 'ICHV'
 #endif
 
 int32_t init_vhci_driver() {
 #ifdef _WIN32
-    // On real Windows, this would be allocated via ExAllocatePoolWithTag
-    // g_SharedMemory = (SharedMemoryContext*)ExAllocatePoolWithTag(NonPagedPool, sizeof(SharedMemoryContext), 'VHCI');
-    // For now, even on Windows, if WDF isn't fully linked, we fallback to new.
-    g_SharedMemory = new SharedMemoryContext();
+    // Allocate Non-Paged Pool memory for the Ring Buffers
+    g_SharedMemory = (SharedMemoryContext*)ExAllocatePoolWithTag(NonPagedPoolNx, sizeof(SharedMemoryContext), VHCI_POOL_TAG);
+
+    if (g_SharedMemory) {
+        // Must explicitly construct because ExAllocatePool just allocates raw memory
+        RtlZeroMemory(g_SharedMemory, sizeof(SharedMemoryContext));
+        new (&g_SharedMemory->tx_ring) SPSC_RingBuffer();
+        new (&g_SharedMemory->rx_ring) SPSC_RingBuffer();
+    }
 #else
     // On Linux/Mock, standard allocation
     g_SharedMemory = new SharedMemoryContext();
@@ -39,8 +36,7 @@ int32_t init_vhci_driver() {
 void cleanup_vhci_driver() {
     if (g_SharedMemory) {
 #ifdef _WIN32
-        // ExFreePool(g_SharedMemory);
-        delete g_SharedMemory;
+        ExFreePoolWithTag(g_SharedMemory, VHCI_POOL_TAG);
 #else
         delete g_SharedMemory;
 #endif
@@ -58,7 +54,6 @@ bool rx_ring_push(const uint8_t* src, size_t len) {
     return g_SharedMemory->rx_ring.push(src, len);
 }
 
-// Mock of what the EvtIoInternalDeviceControl callback would do when it receives an URB
 bool intercept_urb(const uint8_t* urb_data, size_t length) {
     if (!g_SharedMemory) return false;
 
