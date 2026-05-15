@@ -74,6 +74,37 @@ struct SPSC_RingBuffer {
         tail.store(current_tail + len, std::memory_order_release);
         return true;
     }
+
+    // Consumer reads up to max_len bytes, returns how many bytes were actually read
+    size_t pop_some(uint8_t* dst, size_t max_len) {
+        size_t current_head = head.load(std::memory_order_acquire);
+        size_t current_tail = tail.load(std::memory_order_relaxed);
+
+        size_t available_data = current_head - current_tail;
+        if (available_data == 0) {
+            return 0; // No data available
+        }
+
+        size_t len = max_len < available_data ? max_len : available_data;
+
+        size_t offset = current_tail % RING_BUFFER_SIZE;
+        size_t first_part = len < (RING_BUFFER_SIZE - offset) ? len : (RING_BUFFER_SIZE - offset);
+
+        // Copy first part
+        for (size_t i = 0; i < first_part; ++i) {
+            dst[i] = data[offset + i];
+        }
+
+        // Copy second part if wrapping around
+        if (first_part < len) {
+            for (size_t i = 0; i < len - first_part; ++i) {
+                dst[first_part + i] = data[i];
+            }
+        }
+
+        tail.store(current_tail + len, std::memory_order_release);
+        return len;
+    }
 };
 
 struct SharedMemoryContext {

@@ -48,8 +48,14 @@ void cleanup_vhci_driver() {
     }
 }
 
-SharedMemoryContext* get_shared_memory() {
-    return g_SharedMemory;
+size_t tx_ring_pop_some(uint8_t* dst, size_t max_len) {
+    if (!g_SharedMemory) return 0;
+    return g_SharedMemory->tx_ring.pop_some(dst, max_len);
+}
+
+bool rx_ring_push(const uint8_t* src, size_t len) {
+    if (!g_SharedMemory) return false;
+    return g_SharedMemory->rx_ring.push(src, len);
 }
 
 // Mock of what the EvtIoInternalDeviceControl callback would do when it receives an URB
