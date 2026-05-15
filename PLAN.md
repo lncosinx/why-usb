@@ -17,8 +17,8 @@
 - [x] Implement fast frame decoder/encoder for URBs
 
 ## Phase 4: Linux/WSL2 Client Development (Rust)
-- [ ] Implement Linux vhci-hcd protocol adapter
-- [ ] Implement Toki-based network client to connect to Server
+- [x] Implement Linux vhci-hcd protocol adapter
+- [x] Implement Toki-based network client to connect to Server
 
 ## Phase 5: Verification & Testing
 - [ ] Basic connectivity test (e.g., USB Mouse)
