@@ -7,9 +7,9 @@
 - [x] Setup `cxx` bridge in `daemon` and verify FFI execution
 
 ## Phase 2: Windows Kernel Driver Development (C++ / WDF)
-- [ ] Setup KMDF driver framework
-- [ ] Intercept URB requests
-- [ ] Implement Shared Memory Ring Buffer (TX/RX)
+- [x] Setup KMDF driver framework
+- [x] Intercept URB requests
+- [x] Implement Shared Memory Ring Buffer (TX/RX)
 
 ## Phase 3: User-mode Daemon Development (Rust / Tokio)
 - [ ] Implement memory mapping from driver in Rust

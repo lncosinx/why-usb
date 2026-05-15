@@ -7,6 +7,7 @@ fn main() {
 
     cxx_build::bridge("src/main.rs")
         .include("../driver/inc")
+        .include(format!("{}/include", dst.display()))
         .flag_if_supported("-std=c++17")
         .compile("why_usb_vhci_bridge");
 
