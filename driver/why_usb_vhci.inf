@@ -1,0 +1,76 @@
+;
+; why_usb_vhci.inf
+;
+
+[Version]
+Signature="$WINDOWS NT$"
+Class=USB
+ClassGuid={36FC9E60-C465-11CF-8056-444553540000}
+Provider=%ManufacturerName%
+CatalogFile=why_usb_vhci.cat
+DriverVer= ; TODO: set DriverVer in stampinf property pages
+
+[DestinationDirs]
+DefaultDestDir = 12
+why_usb_vhci_Device_CoInstaller_CopyFiles = 11
+
+[SourceDisksNames]
+1 = %DiskName%,,,""
+
+[SourceDisksFiles]
+why_usb_vhci.sys  = 1,,
+WdfCoInstaller$KMDFCOINSTALLERVERSION$.dll=1 ; make sure the number matches with SourceDisksNames
+
+;*****************************************
+; Install Section
+;*****************************************
+
+[Manufacturer]
+%ManufacturerName%=Standard,NT$ARCH$
+
+[Standard.NT$ARCH$]
+%why_usb_vhci.DeviceDesc%=why_usb_vhci_Device, Root\why_usb_vhci ; TODO: edit hw-id
+
+[why_usb_vhci_Device.NT]
+CopyFiles=Drivers_Dir
+
+[Drivers_Dir]
+why_usb_vhci.sys
+
+;-------------- Service installation
+[why_usb_vhci_Device.NT.Services]
+AddService = why_usb_vhci,%SPSVCINST_ASSOCSERVICE%, why_usb_vhci_Service_Inst
+
+; -------------- why_usb_vhci driver install sections
+[why_usb_vhci_Service_Inst]
+DisplayName    = %why_usb_vhci.SVCDESC%
+ServiceType    = 1               ; SERVICE_KERNEL_DRIVER
+StartType      = 3               ; SERVICE_DEMAND_START
+ErrorControl   = 1               ; SERVICE_ERROR_NORMAL
+ServiceBinary  = %12%\why_usb_vhci.sys
+
+;
+;--- why_usb_vhci_Device Coinstaller installation ------
+;
+
+[why_usb_vhci_Device.NT.CoInstallers]
+AddReg=why_usb_vhci_Device_CoInstaller_AddReg
+CopyFiles=why_usb_vhci_Device_CoInstaller_CopyFiles
+
+[why_usb_vhci_Device_CoInstaller_AddReg]
+HKR,,CoInstallers32,0x00010000, "WdfCoInstaller$KMDFCOINSTALLERVERSION$.dll,WdfCoInstaller"
+
+[why_usb_vhci_Device_CoInstaller_CopyFiles]
+WdfCoInstaller$KMDFCOINSTALLERVERSION$.dll
+
+[why_usb_vhci_Device.NT.Wdf]
+KmdfService =  why_usb_vhci, why_usb_vhci_wdfsect
+[why_usb_vhci_wdfsect]
+KmdfLibraryVersion = $KMDFVERSION$
+
+[Strings]
+SPSVCINST_ASSOCSERVICE= 0x00000002
+ManufacturerName="why_usb" ;TODO: Replace with your manufacturer name
+DiskName = "why_usb_vhci Installation Disk"
+why_usb_vhci.DeviceDesc = "why_usb_vhci Device"
+why_usb_vhci.SVCDESC = "why_usb_vhci Service"
