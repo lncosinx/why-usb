@@ -44,6 +44,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Disable Nagle's algorithm for low latency as specified
     stream.set_nodelay(true)?;
 
+    // Configure socket buffer sizes to maximum as per phase 3.2
+    // We get the underlying raw socket using socket2 and set buffer sizes
+    let sock_ref = socket2::SockRef::from(&stream);
+    // Set to 8MB or a suitably large size for extreme high throughput
+    let _ = sock_ref.set_recv_buffer_size(8 * 1024 * 1024);
+    let _ = sock_ref.set_send_buffer_size(8 * 1024 * 1024);
+
     // Set up Length-Delimited Codec for fast framing
     let mut framed = Framed::new(stream, LengthDelimitedCodec::new());
 
