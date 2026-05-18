@@ -19,6 +19,8 @@
 - [x] Implement memory mapping from driver in Rust
 - [x] Create Toki-based async TCP Server
 - [x] Implement fast frame decoder/encoder for URBs
+- [x] Configure SO_RCVBUF and SO_SNDBUF to maximum for low latency.
+- [x] Define raw binary URB structs using bytemuck.
 
 ## Phase 4: Linux/WSL2 Client Development (Rust)
 - [x] Implement Linux vhci-hcd protocol adapter
