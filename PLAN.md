@@ -23,6 +23,9 @@
 ## Phase 4: Linux/WSL2 Client Development (Rust)
 - [x] Implement Linux vhci-hcd protocol adapter
 - [x] Implement Toki-based network client to connect to Server
+- [x] Add bytemuck dependency to protocol
+- [x] Define URB raw binary structs in protocol crate
+- [x] Construct and serialize protocol URB structs in client
 
 ## Phase 5: Verification & Testing
 - [x] Basic connectivity test (e.g., USB Mouse)

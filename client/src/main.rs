@@ -6,6 +6,7 @@ use tokio::net::TcpStream;
 use tokio::time::{sleep, Duration};
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
+use protocol::UrbMessage;
 use vhci::VhciAdapter;
 
 #[tokio::main]
@@ -42,11 +43,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (tx_sender, mut tx_receiver) = tokio::sync::mpsc::channel::<BytesMut>(100);
 
     let mock_local_usb_task = tokio::spawn(async move {
+        let mut urb_id = 0;
         // Send a mock local URB every 5 seconds
         loop {
             sleep(Duration::from_secs(5)).await;
+
+            urb_id += 1;
+            let mut msg = UrbMessage::new(urb_id, 0, 1, 2, 1);
+            msg.set_payload(b"Mock URB from Linux Client");
+
             let mut payload = BytesMut::new();
-            payload.put_slice(b"Mock URB from Linux Client");
+            payload.put_slice(bytemuck::bytes_of(&msg));
 
             if tx_sender.send(payload).await.is_err() {
                 break;
