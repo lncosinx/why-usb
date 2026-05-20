@@ -19,6 +19,10 @@
 - [x] Implement memory mapping from driver in Rust
 - [x] Create Toki-based async TCP Server
 - [x] Implement fast frame decoder/encoder for URBs
+- [x] Optimize socket buffer sizes in `daemon` with `socket2` crate
+
+## Phase 3.5: Protocol Definition
+- [x] Define raw binary USB Request Block (URB) formats in `protocol` using `bytemuck` zero-copy serialization
 
 ## Phase 4: Linux/WSL2 Client Development (Rust)
 - [x] Implement Linux vhci-hcd protocol adapter

@@ -44,6 +44,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Disable Nagle's algorithm for low latency as specified
     stream.set_nodelay(true)?;
 
+    // Optimize socket buffer sizes
+    let sock = socket2::SockRef::from(&stream);
+    let _ = sock.set_recv_buffer_size(MAX_URB_SIZE * 4);
+    let _ = sock.set_send_buffer_size(MAX_URB_SIZE * 4);
+
     // Set up Length-Delimited Codec for fast framing
     let mut framed = Framed::new(stream, LengthDelimitedCodec::new());
 
