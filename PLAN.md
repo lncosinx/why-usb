@@ -31,3 +31,7 @@
 - [x] Memory leak & BSOD stability verification
 - [x] Verify file creations and CMake configuration changes.
 - [x] Run integration tests to ensure project still builds on Linux.
+
+## Phase 6: Optimization and Protocol Implementation
+- [x] Implement Zero-copy URB Structs in `protocol` crate (using `bytemuck` and exactly 16-byte aligned `#[repr(C)]` `UrbHeader`)
+- [x] Optimize Daemon Network Socket with `socket2` (maximize `SO_RCVBUF` and `SO_SNDBUF`)
