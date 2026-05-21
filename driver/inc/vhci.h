@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 #include <cstddef>
+#include "ioctl.h"
 
 #ifdef _WIN32
 // For a mock Windows build without the actual WDK installed, we define the missing types.
@@ -43,10 +44,14 @@ struct SharedMemoryContext;
 // Public FFI functions
 int32_t init_vhci_driver();
 void cleanup_vhci_driver();
+void use_external_shared_memory_context(SharedMemoryContext* context);
 
 // FFI wrappers for ring buffer interaction
-size_t tx_ring_pop_some(uint8_t* dst, size_t max_len);
-bool rx_ring_push(const uint8_t* src, size_t len);
+bool tx_ring_pop_frame(uint8_t* dst, size_t max_len, size_t* out_len);
+bool rx_ring_push_frame(const uint8_t* src, size_t len);
+bool get_shared_memory_info(WhyUsbSharedMemoryInfo* info);
+bool get_driver_status(WhyUsbStatusResponse* status);
 
 // Mock URB interception function
 bool intercept_urb(const uint8_t* urb_data, size_t length);
+bool mock_driver_pump_once();

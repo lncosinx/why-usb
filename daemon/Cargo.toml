@@ -7,8 +7,11 @@ edition = "2021"
 bytes = "1.11.1"
 cxx = "1.0"
 futures = "0.3.32"
+protocol = { path = "../protocol" }
 tokio = { version = "1.52.3", features = ["full"] }
 tokio-util = { version = "0.7.18", features = ["codec"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt"] }
 
 [build-dependencies]
 cxx-build = "1.0"

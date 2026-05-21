@@ -6,19 +6,20 @@
 
 // Global context pointer to simulate driver extension
 static SharedMemoryContext* g_SharedMemory = nullptr;
+static bool g_OwnsSharedMemory = false;
 
-#ifdef _WIN32
-// We provide dummy declarations here just to make the Linux mock build pass
-// In a real Windows build, these would be provided by WDF headers
-extern "C" {
-    NTSTATUS DriverEntry(void* DriverObject, void* RegistryPath) {
-        // Initialize WDF driver object here
-        return init_vhci_driver();
+static void release_owned_shared_memory() {
+    if (g_SharedMemory && g_OwnsSharedMemory) {
+        delete g_SharedMemory;
     }
+
+    g_SharedMemory = nullptr;
+    g_OwnsSharedMemory = false;
 }
-#endif
 
 int32_t init_vhci_driver() {
+    release_owned_shared_memory();
+
 #ifdef _WIN32
     // On real Windows, this would be allocated via ExAllocatePoolWithTag
     // g_SharedMemory = (SharedMemoryContext*)ExAllocatePoolWithTag(NonPagedPool, sizeof(SharedMemoryContext), 'VHCI');
@@ -33,29 +34,59 @@ int32_t init_vhci_driver() {
         return STATUS_UNSUCCESSFUL;
     }
 
+    g_OwnsSharedMemory = true;
     return STATUS_SUCCESS;
 }
 
 void cleanup_vhci_driver() {
-    if (g_SharedMemory) {
-#ifdef _WIN32
-        // ExFreePool(g_SharedMemory);
-        delete g_SharedMemory;
-#else
-        delete g_SharedMemory;
-#endif
-        g_SharedMemory = nullptr;
-    }
+    release_owned_shared_memory();
 }
 
-size_t tx_ring_pop_some(uint8_t* dst, size_t max_len) {
-    if (!g_SharedMemory) return 0;
-    return g_SharedMemory->tx_ring.pop_some(dst, max_len);
+void use_external_shared_memory_context(SharedMemoryContext* context) {
+    release_owned_shared_memory();
+    g_SharedMemory = context;
+    g_OwnsSharedMemory = false;
 }
 
-bool rx_ring_push(const uint8_t* src, size_t len) {
+bool tx_ring_pop_frame(uint8_t* dst, size_t max_len, size_t* out_len) {
     if (!g_SharedMemory) return false;
-    return g_SharedMemory->rx_ring.push(src, len);
+    return g_SharedMemory->tx_ring.pop_frame(dst, max_len, out_len);
+}
+
+bool rx_ring_push_frame(const uint8_t* src, size_t len) {
+    if (!g_SharedMemory) return false;
+    return g_SharedMemory->rx_ring.push_frame(src, len);
+}
+
+bool get_shared_memory_info(WhyUsbSharedMemoryInfo* info) {
+    if (!g_SharedMemory || !info) return false;
+
+    info->header.magic = WHY_USB_ABI_MAGIC;
+    info->header.version = WHY_USB_ABI_VERSION;
+    info->header.size = sizeof(WhyUsbSharedMemoryInfo);
+    info->section_handle = 0;
+    info->tx_event_handle = 0;
+    info->rx_event_handle = 0;
+    info->mapping_size = g_SharedMemory->header.mapping_size;
+    info->tx_ring_size = g_SharedMemory->header.tx_ring_size;
+    info->rx_ring_size = g_SharedMemory->header.rx_ring_size;
+    info->tx_ring_offset = g_SharedMemory->header.tx_ring_offset;
+    info->rx_ring_offset = g_SharedMemory->header.rx_ring_offset;
+    return true;
+}
+
+bool get_driver_status(WhyUsbStatusResponse* status) {
+    if (!g_SharedMemory || !status) return false;
+
+    status->header.magic = WHY_USB_ABI_MAGIC;
+    status->header.version = WHY_USB_ABI_VERSION;
+    status->header.size = sizeof(WhyUsbStatusResponse);
+    status->session_id = 1;
+    status->status = WHY_USB_STATUS_OK;
+    status->session_state = WHY_USB_SESSION_OPEN;
+    status->tx_queued_bytes = static_cast<uint32_t>(g_SharedMemory->tx_ring.available_data());
+    status->rx_queued_bytes = static_cast<uint32_t>(g_SharedMemory->rx_ring.available_data());
+    return true;
 }
 
 // Mock of what the EvtIoInternalDeviceControl callback would do when it receives an URB
@@ -63,11 +94,24 @@ bool intercept_urb(const uint8_t* urb_data, size_t length) {
     if (!g_SharedMemory) return false;
 
     // The kernel intercepts the URB and writes it to the TX Ring Buffer for the user-mode daemon
-    bool success = g_SharedMemory->tx_ring.push(urb_data, length);
+    bool success = g_SharedMemory->tx_ring.push_frame(urb_data, length);
 
     if (success) {
         // In a real driver, we might signal a KEVENT here to wake up the user-mode process
     }
 
     return success;
+}
+
+bool mock_driver_pump_once() {
+    if (!g_SharedMemory) return false;
+
+    uint8_t buffer[64 * 1024];
+    size_t frame_len = 0;
+
+    if (!g_SharedMemory->rx_ring.pop_frame(buffer, sizeof(buffer), &frame_len)) {
+        return false;
+    }
+
+    return g_SharedMemory->tx_ring.push_frame(buffer, frame_len);
 }
