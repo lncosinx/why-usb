@@ -41,6 +41,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (stream, addr) = listener.accept().await?;
     println!("[Daemon] Accepted connection from: {}", addr);
 
+    // Maximize network socket buffers for high throughput
+    {
+        let sock = socket2::SockRef::from(&stream);
+        // Maximize socket buffers (ignoring errors if OS limits are hit, 16MB is a good target)
+        let _ = sock.set_recv_buffer_size(16 * 1024 * 1024);
+        let _ = sock.set_send_buffer_size(16 * 1024 * 1024);
+    }
+
     // Disable Nagle's algorithm for low latency as specified
     stream.set_nodelay(true)?;
 
