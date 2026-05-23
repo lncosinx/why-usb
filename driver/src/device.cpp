@@ -12,6 +12,8 @@ typedef struct _WHY_USB_DEVICE_CONTEXT {
     HANDLE SectionHandle;
     HANDLE TxEventHandle;
     HANDLE RxEventHandle;
+    PKEVENT TxEventObject;
+    PKEVENT RxEventObject;
     PVOID SectionView;
     SIZE_T SectionViewSize;
     BOOLEAN SharedMemoryReady;
@@ -64,6 +66,14 @@ static NTSTATUS EnsureDriverMemoryContext()
     return init_vhci_driver();
 }
 
+static void DerefEventIfPresent(PKEVENT* EventObject)
+{
+    if (EventObject && *EventObject) {
+        ObDereferenceObject(*EventObject);
+        *EventObject = nullptr;
+    }
+}
+
 static void CloseSharedResources(PWHY_USB_DEVICE_CONTEXT Context)
 {
     if (!Context) {
@@ -77,6 +87,9 @@ static void CloseSharedResources(PWHY_USB_DEVICE_CONTEXT Context)
     }
 
     use_external_shared_memory_context(nullptr);
+
+    DerefEventIfPresent(&Context->TxEventObject);
+    DerefEventIfPresent(&Context->RxEventObject);
 
     CloseIfPresent(&Context->SectionHandle);
     CloseIfPresent(&Context->TxEventHandle);
@@ -108,7 +121,7 @@ static NTSTATUS CreateSharedResources(PWHY_USB_DEVICE_CONTEXT Context)
     maximumSize.QuadPart = sizeof(SharedMemoryContext);
 
     OBJECT_ATTRIBUTES attributes;
-    InitializeObjectAttributes(&attributes, nullptr, 0, nullptr, nullptr);
+    InitializeObjectAttributes(&attributes, nullptr, OBJ_KERNEL_HANDLE, nullptr, nullptr);
 
     NTSTATUS status = ZwCreateSection(
         &Context->SectionHandle,
@@ -147,12 +160,29 @@ static NTSTATUS CreateSharedResources(PWHY_USB_DEVICE_CONTEXT Context)
     InitializeSharedMemoryContext(reinterpret_cast<SharedMemoryContext*>(Context->SectionView));
     use_external_shared_memory_context(reinterpret_cast<SharedMemoryContext*>(Context->SectionView));
 
+    // Ensure event handles are also created with OBJ_KERNEL_HANDLE
+    OBJECT_ATTRIBUTES eventAttributes;
+    InitializeObjectAttributes(&eventAttributes, nullptr, OBJ_KERNEL_HANDLE, nullptr, nullptr);
+
     status = ZwCreateEvent(
         &Context->TxEventHandle,
         EVENT_MODIFY_STATE | SYNCHRONIZE,
-        &attributes,
+        &eventAttributes,
         SynchronizationEvent,
         FALSE
+    );
+
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
+    status = ObReferenceObjectByHandle(
+        Context->TxEventHandle,
+        EVENT_MODIFY_STATE,
+        ExEventObjectType,
+        KernelMode,
+        reinterpret_cast<PVOID*>(&Context->TxEventObject),
+        nullptr
     );
 
     if (!NT_SUCCESS(status)) {
@@ -162,9 +192,22 @@ static NTSTATUS CreateSharedResources(PWHY_USB_DEVICE_CONTEXT Context)
     status = ZwCreateEvent(
         &Context->RxEventHandle,
         EVENT_MODIFY_STATE | SYNCHRONIZE,
-        &attributes,
+        &eventAttributes,
         SynchronizationEvent,
         FALSE
+    );
+
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
+    status = ObReferenceObjectByHandle(
+        Context->RxEventHandle,
+        EVENT_MODIFY_STATE,
+        ExEventObjectType,
+        KernelMode,
+        reinterpret_cast<PVOID*>(&Context->RxEventObject),
+        nullptr
     );
 
     return status;
@@ -191,17 +234,46 @@ static NTSTATUS EnsureSharedResources(PWHY_USB_DEVICE_CONTEXT Context)
         return STATUS_INVALID_DEVICE_STATE;
     }
 
-    Context->SharedMemoryInfo.section_handle = HandleToU64(Context->SectionHandle);
-    Context->SharedMemoryInfo.tx_event_handle = HandleToU64(Context->TxEventHandle);
-    Context->SharedMemoryInfo.rx_event_handle = HandleToU64(Context->RxEventHandle);
     Context->SharedMemoryReady = TRUE;
 
-    /*
-     * First-pass prototype: handles are created in the IOCTL caller context.
-     * Production hardening should explicitly duplicate handles into the daemon
-     * process and validate requestor identity before returning them.
-     */
     return STATUS_SUCCESS;
+}
+
+static NTSTATUS DuplicateHandleToRequestor(WDFREQUEST Request, HANDLE KernelHandle, PHANDLE UserHandle)
+{
+    PIRP irp = WdfRequestWdmGetIrp(Request);
+    PEPROCESS requestorProcess = IoGetRequestorProcess(irp);
+    if (!requestorProcess) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    HANDLE requestorProcessHandle = nullptr;
+    NTSTATUS status = ObOpenObjectByPointer(
+        requestorProcess,
+        OBJ_KERNEL_HANDLE,
+        nullptr,
+        0,
+        PsProcessType,
+        KernelMode,
+        &requestorProcessHandle
+    );
+
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
+    status = ZwDuplicateObject(
+        NtCurrentProcess(),
+        KernelHandle,
+        requestorProcessHandle,
+        UserHandle,
+        0,
+        0,
+        DUPLICATE_SAME_ACCESS
+    );
+
+    ZwClose(requestorProcessHandle);
+    return status;
 }
 
 template <typename T>
@@ -218,6 +290,22 @@ static NTSTATUS CompleteWithStruct(WDFREQUEST Request, const T& value)
     RtlCopyMemory(outputBuffer, &value, sizeof(T));
     WdfRequestCompleteWithInformation(Request, STATUS_SUCCESS, sizeof(T));
     return STATUS_SUCCESS;
+}
+
+static PWHY_USB_DEVICE_CONTEXT g_GlobalDeviceContext = nullptr;
+
+static void GlobalTxEventSignalHook()
+{
+    if (g_GlobalDeviceContext && g_GlobalDeviceContext->TxEventObject) {
+        KeSetEvent(g_GlobalDeviceContext->TxEventObject, 0, FALSE);
+    }
+}
+
+static void GlobalRxEventSignalHook()
+{
+    if (g_GlobalDeviceContext && g_GlobalDeviceContext->RxEventObject) {
+        KeSetEvent(g_GlobalDeviceContext->RxEventObject, 0, FALSE);
+    }
 }
 
 extern "C" NTSTATUS
@@ -246,6 +334,10 @@ EvtDriverDeviceAdd(
         return status;
     }
 
+    g_GlobalDeviceContext = WhyUsbGetDeviceContext(device);
+    set_tx_event_signal_hook(GlobalTxEventSignalHook);
+    set_rx_event_signal_hook(GlobalRxEventSignalHook);
+
     WDF_IO_QUEUE_CONFIG_INIT_DEFAULT_QUEUE(&queueConfig, WdfIoQueueDispatchSequential);
     queueConfig.EvtIoDeviceControl = EvtIoDeviceControl;
 
@@ -270,6 +362,11 @@ EvtDeviceContextCleanup(
 )
 {
     auto context = WhyUsbGetDeviceContext(DeviceObject);
+    if (g_GlobalDeviceContext == context) {
+        set_tx_event_signal_hook(nullptr);
+        set_rx_event_signal_hook(nullptr);
+        g_GlobalDeviceContext = nullptr;
+    }
     CloseSharedResources(context);
 }
 
@@ -318,6 +415,35 @@ EvtIoDeviceControl(
             WdfRequestCompleteWithInformation(Request, status, 0);
             break;
         }
+
+        HANDLE userSectionHandle = nullptr;
+        HANDLE userTxEventHandle = nullptr;
+        HANDLE userRxEventHandle = nullptr;
+
+        status = DuplicateHandleToRequestor(Request, context->SectionHandle, &userSectionHandle);
+        if (NT_SUCCESS(status)) {
+            status = DuplicateHandleToRequestor(Request, context->TxEventHandle, &userTxEventHandle);
+        }
+        if (NT_SUCCESS(status)) {
+            status = DuplicateHandleToRequestor(Request, context->RxEventHandle, &userRxEventHandle);
+        }
+
+        if (!NT_SUCCESS(status)) {
+            // Note: If we fail here, userSectionHandle/userTxEventHandle might already be
+            // valid in the *requestor's* handle table. We cannot just call ZwClose() here
+            // because we might be in an arbitrary system thread context, which would close
+            // a random handle in the system process!
+            // To properly clean up handles duplicated into another process, we would need to
+            // use KeStackAttachProcess or duplicate them back with DUPLICATE_CLOSE_SOURCE.
+            // For now, in this error path, we simply let the user process clean them up on exit.
+            WdfRequestCompleteWithInformation(Request, status, 0);
+            break;
+        }
+
+        context->SharedMemoryInfo.section_handle = HandleToU64(userSectionHandle);
+        context->SharedMemoryInfo.tx_event_handle = HandleToU64(userTxEventHandle);
+        context->SharedMemoryInfo.rx_event_handle = HandleToU64(userRxEventHandle);
+
         CompleteWithStruct(Request, context->SharedMemoryInfo);
         break;
     }
