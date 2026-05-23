@@ -89,6 +89,18 @@ bool get_driver_status(WhyUsbStatusResponse* status) {
     return true;
 }
 
+// External hooks for event signaling
+static void (*g_TxEventSignalHook)() = nullptr;
+static void (*g_RxEventSignalHook)() = nullptr;
+
+void set_tx_event_signal_hook(void (*hook)()) {
+    g_TxEventSignalHook = hook;
+}
+
+void set_rx_event_signal_hook(void (*hook)()) {
+    g_RxEventSignalHook = hook;
+}
+
 // Mock of what the EvtIoInternalDeviceControl callback would do when it receives an URB
 bool intercept_urb(const uint8_t* urb_data, size_t length) {
     if (!g_SharedMemory) return false;
@@ -96,8 +108,9 @@ bool intercept_urb(const uint8_t* urb_data, size_t length) {
     // The kernel intercepts the URB and writes it to the TX Ring Buffer for the user-mode daemon
     bool success = g_SharedMemory->tx_ring.push_frame(urb_data, length);
 
-    if (success) {
-        // In a real driver, we might signal a KEVENT here to wake up the user-mode process
+    if (success && g_TxEventSignalHook) {
+        // Signal the KEVENT to wake up the user-mode process
+        g_TxEventSignalHook();
     }
 
     return success;
@@ -113,5 +126,14 @@ bool mock_driver_pump_once() {
         return false;
     }
 
-    return g_SharedMemory->tx_ring.push_frame(buffer, frame_len);
+    bool success = g_SharedMemory->tx_ring.push_frame(buffer, frame_len);
+
+    if (success && g_TxEventSignalHook) {
+        g_TxEventSignalHook();
+    }
+    if (frame_len > 0 && g_RxEventSignalHook) {
+        g_RxEventSignalHook();
+    }
+
+    return success;
 }

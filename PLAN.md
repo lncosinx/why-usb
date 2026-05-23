@@ -95,8 +95,8 @@ Not completed yet:
 - [x] Add daemon-side event wait/signal hooks for mapped TX/RX rings.
 - [x] Replace the current user-mode `new SharedMemoryContext()` mock with a first-pass KMDF section mapping when `GET_SHARED_MEMORY` is requested.
 - [x] Create first-pass section/event handles for `GET_SHARED_MEMORY` instead of returning `STATUS_NOT_IMPLEMENTED`.
-- [ ] Harden `GET_SHARED_MEMORY` by duplicating handles into the daemon process and validating the IOCTL requestor.
-- [ ] Add KMDF-side event signaling when TX/RX ring state changes.
+- [x] Harden `GET_SHARED_MEMORY` by duplicating handles into the daemon process and validating the IOCTL requestor.
+- [x] Add KMDF-side event signaling when TX/RX ring state changes.
 - [ ] Run Driver Verifier against load/unload and IOCTL open/close paths.
 
 ## Phase 4: USB Enumeration MVP
