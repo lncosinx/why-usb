@@ -108,7 +108,7 @@ static NTSTATUS CreateSharedResources(PWHY_USB_DEVICE_CONTEXT Context)
     maximumSize.QuadPart = sizeof(SharedMemoryContext);
 
     OBJECT_ATTRIBUTES attributes;
-    InitializeObjectAttributes(&attributes, nullptr, 0, nullptr, nullptr);
+    InitializeObjectAttributes(&attributes, nullptr, OBJ_KERNEL_HANDLE, nullptr, nullptr);
 
     NTSTATUS status = ZwCreateSection(
         &Context->SectionHandle,
@@ -318,7 +318,76 @@ EvtIoDeviceControl(
             WdfRequestCompleteWithInformation(Request, status, 0);
             break;
         }
-        CompleteWithStruct(Request, context->SharedMemoryInfo);
+
+        PEPROCESS requestorProcess = IoGetRequestorProcess(WdfRequestWdmGetIrp(Request));
+        if (!requestorProcess) {
+            WdfRequestCompleteWithInformation(Request, STATUS_INVALID_PARAMETER, 0);
+            break;
+        }
+
+        HANDLE processHandle = nullptr;
+        status = ObOpenObjectByPointer(
+            requestorProcess,
+            0,
+            nullptr,
+            0,
+            nullptr,
+            KernelMode,
+            &processHandle
+        );
+
+        if (!NT_SUCCESS(status)) {
+            WdfRequestCompleteWithInformation(Request, status, 0);
+            break;
+        }
+
+        WhyUsbSharedMemoryInfo dupInfo = context->SharedMemoryInfo;
+        HANDLE dupSection = nullptr;
+        HANDLE dupTx = nullptr;
+        HANDLE dupRx = nullptr;
+
+        status = ZwDuplicateObject(
+            NtCurrentProcess(),
+            context->SectionHandle,
+            processHandle,
+            &dupSection,
+            0,
+            0,
+            DUPLICATE_SAME_ACCESS
+        );
+        if (NT_SUCCESS(status)) {
+            dupInfo.section_handle = HandleToU64(dupSection);
+        }
+
+        status = ZwDuplicateObject(
+            NtCurrentProcess(),
+            context->TxEventHandle,
+            processHandle,
+            &dupTx,
+            0,
+            0,
+            DUPLICATE_SAME_ACCESS
+        );
+        if (NT_SUCCESS(status)) {
+            dupInfo.tx_event_handle = HandleToU64(dupTx);
+        }
+
+        status = ZwDuplicateObject(
+            NtCurrentProcess(),
+            context->RxEventHandle,
+            processHandle,
+            &dupRx,
+            0,
+            0,
+            DUPLICATE_SAME_ACCESS
+        );
+        if (NT_SUCCESS(status)) {
+            dupInfo.rx_event_handle = HandleToU64(dupRx);
+        }
+
+        ZwClose(processHandle);
+
+        CompleteWithStruct(Request, dupInfo);
         break;
     }
 
