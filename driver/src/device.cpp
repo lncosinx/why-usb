@@ -8,10 +8,20 @@
 static uint64_t g_SessionId = 1;
 static WHY_USB_SESSION_STATE g_SessionState = WHY_USB_SESSION_CLOSED;
 
+PVOID g_ActiveTxEvent = nullptr;
+
+extern "C" void trigger_tx_event() {
+    if (g_ActiveTxEvent) {
+        KeSetEvent(static_cast<PKEVENT>(g_ActiveTxEvent), 0, FALSE);
+    }
+}
+
 typedef struct _WHY_USB_DEVICE_CONTEXT {
     HANDLE SectionHandle;
     HANDLE TxEventHandle;
     HANDLE RxEventHandle;
+    PVOID TxEvent;
+    PVOID RxEvent;
     PVOID SectionView;
     SIZE_T SectionViewSize;
     BOOLEAN SharedMemoryReady;
@@ -70,6 +80,18 @@ static void CloseSharedResources(PWHY_USB_DEVICE_CONTEXT Context)
         return;
     }
 
+    g_ActiveTxEvent = nullptr;
+
+    if (Context->TxEvent) {
+        ObDereferenceObject(Context->TxEvent);
+        Context->TxEvent = nullptr;
+    }
+
+    if (Context->RxEvent) {
+        ObDereferenceObject(Context->RxEvent);
+        Context->RxEvent = nullptr;
+    }
+
     if (Context->SectionView) {
         ZwUnmapViewOfSection(NtCurrentProcess(), Context->SectionView);
         Context->SectionView = nullptr;
@@ -108,7 +130,7 @@ static NTSTATUS CreateSharedResources(PWHY_USB_DEVICE_CONTEXT Context)
     maximumSize.QuadPart = sizeof(SharedMemoryContext);
 
     OBJECT_ATTRIBUTES attributes;
-    InitializeObjectAttributes(&attributes, nullptr, 0, nullptr, nullptr);
+    InitializeObjectAttributes(&attributes, nullptr, OBJ_KERNEL_HANDLE, nullptr, nullptr);
 
     NTSTATUS status = ZwCreateSection(
         &Context->SectionHandle,
@@ -170,7 +192,7 @@ static NTSTATUS CreateSharedResources(PWHY_USB_DEVICE_CONTEXT Context)
     return status;
 }
 
-static NTSTATUS EnsureSharedResources(PWHY_USB_DEVICE_CONTEXT Context)
+static NTSTATUS EnsureSharedResources(PWHY_USB_DEVICE_CONTEXT Context, WDFREQUEST Request)
 {
     if (!Context) {
         return STATUS_INVALID_PARAMETER;
@@ -191,16 +213,52 @@ static NTSTATUS EnsureSharedResources(PWHY_USB_DEVICE_CONTEXT Context)
         return STATUS_INVALID_DEVICE_STATE;
     }
 
-    Context->SharedMemoryInfo.section_handle = HandleToU64(Context->SectionHandle);
-    Context->SharedMemoryInfo.tx_event_handle = HandleToU64(Context->TxEventHandle);
-    Context->SharedMemoryInfo.rx_event_handle = HandleToU64(Context->RxEventHandle);
+    PEPROCESS process = IoGetRequestorProcess(WdfRequestWdmGetIrp(Request));
+    HANDLE processHandle = nullptr;
+    status = ObOpenObjectByPointer(process, OBJ_KERNEL_HANDLE, nullptr, 0, nullptr, KernelMode, &processHandle);
+    if (!NT_SUCCESS(status)) {
+        CloseSharedResources(Context);
+        return status;
+    }
+
+    HANDLE UserSectionHandle = nullptr;
+    HANDLE UserTxEventHandle = nullptr;
+    HANDLE UserRxEventHandle = nullptr;
+
+    status = ZwDuplicateObject(NtCurrentProcess(), Context->SectionHandle, processHandle, &UserSectionHandle, SECTION_MAP_READ | SECTION_MAP_WRITE, 0, 0);
+    if (NT_SUCCESS(status)) {
+        status = ZwDuplicateObject(NtCurrentProcess(), Context->TxEventHandle, processHandle, &UserTxEventHandle, EVENT_MODIFY_STATE | SYNCHRONIZE, 0, 0);
+        if (NT_SUCCESS(status)) {
+            status = ZwDuplicateObject(NtCurrentProcess(), Context->RxEventHandle, processHandle, &UserRxEventHandle, EVENT_MODIFY_STATE | SYNCHRONIZE, 0, 0);
+        }
+    }
+
+    ZwClose(processHandle);
+
+    if (!NT_SUCCESS(status)) {
+        CloseSharedResources(Context);
+        return status;
+    }
+
+    status = ObReferenceObjectByHandle(Context->TxEventHandle, 0, nullptr, KernelMode, &Context->TxEvent, nullptr);
+    if (!NT_SUCCESS(status)) {
+        CloseSharedResources(Context);
+        return status;
+    }
+
+    status = ObReferenceObjectByHandle(Context->RxEventHandle, 0, nullptr, KernelMode, &Context->RxEvent, nullptr);
+    if (!NT_SUCCESS(status)) {
+        CloseSharedResources(Context);
+        return status;
+    }
+
+    g_ActiveTxEvent = Context->TxEvent;
+
+    Context->SharedMemoryInfo.section_handle = HandleToU64(UserSectionHandle);
+    Context->SharedMemoryInfo.tx_event_handle = HandleToU64(UserTxEventHandle);
+    Context->SharedMemoryInfo.rx_event_handle = HandleToU64(UserRxEventHandle);
     Context->SharedMemoryReady = TRUE;
 
-    /*
-     * First-pass prototype: handles are created in the IOCTL caller context.
-     * Production hardening should explicitly duplicate handles into the daemon
-     * process and validate requestor identity before returning them.
-     */
     return STATUS_SUCCESS;
 }
 
@@ -313,7 +371,7 @@ EvtIoDeviceControl(
         break;
 
     case IOCTL_WHY_USB_GET_SHARED_MEMORY: {
-        NTSTATUS status = EnsureSharedResources(context);
+        NTSTATUS status = EnsureSharedResources(context, Request);
         if (!NT_SUCCESS(status)) {
             WdfRequestCompleteWithInformation(Request, status, 0);
             break;

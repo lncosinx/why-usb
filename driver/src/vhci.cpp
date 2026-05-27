@@ -90,6 +90,10 @@ bool get_driver_status(WhyUsbStatusResponse* status) {
 }
 
 // Mock of what the EvtIoInternalDeviceControl callback would do when it receives an URB
+#ifdef _WIN32
+extern "C" void trigger_tx_event();
+#endif
+
 bool intercept_urb(const uint8_t* urb_data, size_t length) {
     if (!g_SharedMemory) return false;
 
@@ -97,7 +101,9 @@ bool intercept_urb(const uint8_t* urb_data, size_t length) {
     bool success = g_SharedMemory->tx_ring.push_frame(urb_data, length);
 
     if (success) {
-        // In a real driver, we might signal a KEVENT here to wake up the user-mode process
+#ifdef _WIN32
+        trigger_tx_event();
+#endif
     }
 
     return success;
@@ -113,5 +119,11 @@ bool mock_driver_pump_once() {
         return false;
     }
 
-    return g_SharedMemory->tx_ring.push_frame(buffer, frame_len);
+    bool success = g_SharedMemory->tx_ring.push_frame(buffer, frame_len);
+    if (success) {
+#ifdef _WIN32
+        trigger_tx_event();
+#endif
+    }
+    return success;
 }
