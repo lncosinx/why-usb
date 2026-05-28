@@ -55,3 +55,30 @@ bool get_driver_status(WhyUsbStatusResponse* status);
 // Mock URB interception function
 bool intercept_urb(const uint8_t* urb_data, size_t length);
 bool mock_driver_pump_once();
+
+#ifndef _WIN32
+
+// Basic mock types for Linux build
+typedef void* PKEVENT;
+typedef void* PEPROCESS;
+typedef uint32_t ULONG;
+typedef uint32_t ACCESS_MASK;
+typedef void* HANDLE;
+
+inline void signal_tx_event() {}
+
+#define OBJ_KERNEL_HANDLE 0x00000200L
+#define KernelMode 1
+#define GENERIC_ALL 0x10000000L
+
+inline PEPROCESS IoGetRequestorProcess(WDFREQUEST) { return nullptr; }
+inline NTSTATUS ObOpenObjectByPointer(void*, ULONG, void*, ACCESS_MASK, void*, int, HANDLE*) { return 0; }
+inline NTSTATUS ZwDuplicateObject(HANDLE, HANDLE, HANDLE, HANDLE*, ACCESS_MASK, ULONG, ULONG) { return 0; }
+inline NTSTATUS ObReferenceObjectByHandle(HANDLE, ACCESS_MASK, void*, int, void**, void*) { return 0; }
+inline void ObDereferenceObject(void*) {}
+inline void KeSetEvent(PKEVENT, int, bool) {}
+inline HANDLE NtCurrentProcess() { return (HANDLE)-1; }
+
+#endif
+
+void signal_tx_event();

@@ -7,11 +7,14 @@
 
 static uint64_t g_SessionId = 1;
 static WHY_USB_SESSION_STATE g_SessionState = WHY_USB_SESSION_CLOSED;
+static WDFDEVICE g_ControlDevice = nullptr;
 
 typedef struct _WHY_USB_DEVICE_CONTEXT {
     HANDLE SectionHandle;
     HANDLE TxEventHandle;
     HANDLE RxEventHandle;
+    PKEVENT TxEvent;
+    PKEVENT RxEvent;
     PVOID SectionView;
     SIZE_T SectionViewSize;
     BOOLEAN SharedMemoryReady;
@@ -78,6 +81,16 @@ static void CloseSharedResources(PWHY_USB_DEVICE_CONTEXT Context)
 
     use_external_shared_memory_context(nullptr);
 
+    if (Context->TxEvent) {
+        ObDereferenceObject(Context->TxEvent);
+        Context->TxEvent = nullptr;
+    }
+
+    if (Context->RxEvent) {
+        ObDereferenceObject(Context->RxEvent);
+        Context->RxEvent = nullptr;
+    }
+
     CloseIfPresent(&Context->SectionHandle);
     CloseIfPresent(&Context->TxEventHandle);
     CloseIfPresent(&Context->RxEventHandle);
@@ -108,7 +121,7 @@ static NTSTATUS CreateSharedResources(PWHY_USB_DEVICE_CONTEXT Context)
     maximumSize.QuadPart = sizeof(SharedMemoryContext);
 
     OBJECT_ATTRIBUTES attributes;
-    InitializeObjectAttributes(&attributes, nullptr, 0, nullptr, nullptr);
+    InitializeObjectAttributes(&attributes, nullptr, OBJ_KERNEL_HANDLE, nullptr, nullptr);
 
     NTSTATUS status = ZwCreateSection(
         &Context->SectionHandle,
@@ -170,7 +183,7 @@ static NTSTATUS CreateSharedResources(PWHY_USB_DEVICE_CONTEXT Context)
     return status;
 }
 
-static NTSTATUS EnsureSharedResources(PWHY_USB_DEVICE_CONTEXT Context)
+static NTSTATUS EnsureSharedResources(PWHY_USB_DEVICE_CONTEXT Context, WDFREQUEST Request)
 {
     if (!Context) {
         return STATUS_INVALID_PARAMETER;
@@ -186,22 +199,63 @@ static NTSTATUS EnsureSharedResources(PWHY_USB_DEVICE_CONTEXT Context)
         return status;
     }
 
+    status = ObReferenceObjectByHandle(Context->TxEventHandle, EVENT_MODIFY_STATE, nullptr, KernelMode, (PVOID*)&Context->TxEvent, nullptr);
+    if (!NT_SUCCESS(status)) {
+        CloseSharedResources(Context);
+        return status;
+    }
+
+    status = ObReferenceObjectByHandle(Context->RxEventHandle, EVENT_MODIFY_STATE, nullptr, KernelMode, (PVOID*)&Context->RxEvent, nullptr);
+    if (!NT_SUCCESS(status)) {
+        CloseSharedResources(Context);
+        return status;
+    }
+
     if (!get_shared_memory_info(&Context->SharedMemoryInfo)) {
         CloseSharedResources(Context);
         return STATUS_INVALID_DEVICE_STATE;
     }
 
-    Context->SharedMemoryInfo.section_handle = HandleToU64(Context->SectionHandle);
-    Context->SharedMemoryInfo.tx_event_handle = HandleToU64(Context->TxEventHandle);
-    Context->SharedMemoryInfo.rx_event_handle = HandleToU64(Context->RxEventHandle);
+    PEPROCESS requestorProcess = IoGetRequestorProcess(Request);
+    if (!requestorProcess) {
+        CloseSharedResources(Context);
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    HANDLE requestorProcessHandle = nullptr;
+    status = ObOpenObjectByPointer(requestorProcess, OBJ_KERNEL_HANDLE, nullptr, GENERIC_ALL, nullptr, KernelMode, &requestorProcessHandle);
+    if (!NT_SUCCESS(status)) {
+        CloseSharedResources(Context);
+        return status;
+    }
+
+    HANDLE userSectionHandle = nullptr;
+    HANDLE userTxEventHandle = nullptr;
+    HANDLE userRxEventHandle = nullptr;
+
+    // 0x00000002 is DUPLICATE_SAME_ACCESS
+    status = ZwDuplicateObject(NtCurrentProcess(), Context->SectionHandle, requestorProcessHandle, &userSectionHandle, 0, 0, 2);
+    if (NT_SUCCESS(status)) {
+        status = ZwDuplicateObject(NtCurrentProcess(), Context->TxEventHandle, requestorProcessHandle, &userTxEventHandle, 0, 0, 2);
+        if (NT_SUCCESS(status)) {
+            status = ZwDuplicateObject(NtCurrentProcess(), Context->RxEventHandle, requestorProcessHandle, &userRxEventHandle, 0, 0, 2);
+        }
+    }
+
+    ZwClose(requestorProcessHandle);
+
+    if (!NT_SUCCESS(status)) {
+        CloseSharedResources(Context);
+        return status;
+    }
+
+    WhyUsbSharedMemoryInfo responseInfo = Context->SharedMemoryInfo;
+    responseInfo.section_handle = HandleToU64(userSectionHandle);
+    responseInfo.tx_event_handle = HandleToU64(userTxEventHandle);
+    responseInfo.rx_event_handle = HandleToU64(userRxEventHandle);
     Context->SharedMemoryReady = TRUE;
 
-    /*
-     * First-pass prototype: handles are created in the IOCTL caller context.
-     * Production hardening should explicitly duplicate handles into the daemon
-     * process and validate requestor identity before returning them.
-     */
-    return STATUS_SUCCESS;
+    return CompleteWithStruct(Request, responseInfo);
 }
 
 template <typename T>
@@ -246,6 +300,8 @@ EvtDriverDeviceAdd(
         return status;
     }
 
+    g_ControlDevice = device;
+
     WDF_IO_QUEUE_CONFIG_INIT_DEFAULT_QUEUE(&queueConfig, WdfIoQueueDispatchSequential);
     queueConfig.EvtIoDeviceControl = EvtIoDeviceControl;
 
@@ -271,6 +327,19 @@ EvtDeviceContextCleanup(
 {
     auto context = WhyUsbGetDeviceContext(DeviceObject);
     CloseSharedResources(context);
+
+    if (DeviceObject == g_ControlDevice) {
+        g_ControlDevice = nullptr;
+    }
+}
+
+void signal_tx_event() {
+    if (g_ControlDevice) {
+        auto context = WhyUsbGetDeviceContext(g_ControlDevice);
+        if (context && context->TxEvent) {
+            KeSetEvent(context->TxEvent, 0, FALSE);
+        }
+    }
 }
 
 extern "C" VOID
@@ -313,12 +382,14 @@ EvtIoDeviceControl(
         break;
 
     case IOCTL_WHY_USB_GET_SHARED_MEMORY: {
-        NTSTATUS status = EnsureSharedResources(context);
+        // Validation: Verify if requestor is the authorized daemon process.
+        // For now, in MVP, we just ensure resources and return them.
+        // Future security hardening should include token/identity checks here.
+        NTSTATUS status = EnsureSharedResources(context, Request);
         if (!NT_SUCCESS(status)) {
             WdfRequestCompleteWithInformation(Request, status, 0);
-            break;
         }
-        CompleteWithStruct(Request, context->SharedMemoryInfo);
+        // EnsureSharedResources will call CompleteWithStruct on success.
         break;
     }
 

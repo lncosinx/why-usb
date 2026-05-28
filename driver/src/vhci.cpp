@@ -97,7 +97,7 @@ bool intercept_urb(const uint8_t* urb_data, size_t length) {
     bool success = g_SharedMemory->tx_ring.push_frame(urb_data, length);
 
     if (success) {
-        // In a real driver, we might signal a KEVENT here to wake up the user-mode process
+        signal_tx_event();
     }
 
     return success;
@@ -113,5 +113,10 @@ bool mock_driver_pump_once() {
         return false;
     }
 
-    return g_SharedMemory->tx_ring.push_frame(buffer, frame_len);
+    bool success = g_SharedMemory->tx_ring.push_frame(buffer, frame_len);
+    if (success) {
+        signal_tx_event();
+    }
+
+    return success;
 }
