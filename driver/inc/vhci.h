@@ -32,9 +32,26 @@ typedef void* WDFMEMORY;
 typedef int POOL_TYPE;
 #define NonPagedPool 0
 
+// Mock macros and constants
+#define OBJ_KERNEL_HANDLE 0x00000200L
+
+typedef int KPROCESSOR_MODE;
+#define KernelMode 0
+
+typedef uint32_t ACCESS_MASK;
+typedef void* PIRP;
+typedef void* PEPROCESS;
+typedef void* POBJECT_TYPE;
+typedef void* HANDLE;
+typedef HANDLE* PHANDLE;
+
 // Mock functions
 inline void* ExAllocatePoolWithTag(POOL_TYPE, size_t, uint32_t) { return nullptr; }
 inline void ExFreePool(void*) {}
+inline PIRP WdfRequestWdmGetIrp(WDFREQUEST) { return nullptr; }
+inline PEPROCESS IoGetRequestorProcess(PIRP) { return nullptr; }
+inline NTSTATUS ObOpenObjectByPointer(void*, uint32_t, void*, ACCESS_MASK, POBJECT_TYPE, KPROCESSOR_MODE, PHANDLE) { return STATUS_SUCCESS; }
+inline NTSTATUS ZwDuplicateObject(HANDLE, HANDLE, HANDLE, PHANDLE, ACCESS_MASK, uint32_t, uint32_t) { return STATUS_SUCCESS; }
 
 #endif
 
