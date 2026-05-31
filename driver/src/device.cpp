@@ -16,6 +16,9 @@ typedef struct _WHY_USB_DEVICE_CONTEXT {
     SIZE_T SectionViewSize;
     BOOLEAN SharedMemoryReady;
     WhyUsbSharedMemoryInfo SharedMemoryInfo;
+    PEPROCESS DaemonProcess;
+    PKEVENT TxEvent;
+    PKEVENT RxEvent;
 } WHY_USB_DEVICE_CONTEXT, *PWHY_USB_DEVICE_CONTEXT;
 
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(WHY_USB_DEVICE_CONTEXT, WhyUsbGetDeviceContext)
@@ -77,10 +80,27 @@ static void CloseSharedResources(PWHY_USB_DEVICE_CONTEXT Context)
     }
 
     use_external_shared_memory_context(nullptr);
+    set_vhci_events(nullptr, nullptr);
 
     CloseIfPresent(&Context->SectionHandle);
     CloseIfPresent(&Context->TxEventHandle);
     CloseIfPresent(&Context->RxEventHandle);
+
+    if (Context->TxEvent) {
+        ObDereferenceObject(Context->TxEvent);
+        Context->TxEvent = nullptr;
+    }
+
+    if (Context->RxEvent) {
+        ObDereferenceObject(Context->RxEvent);
+        Context->RxEvent = nullptr;
+    }
+
+    if (Context->DaemonProcess) {
+        ObDereferenceObject(Context->DaemonProcess);
+        Context->DaemonProcess = nullptr;
+    }
+
     Context->SharedMemoryReady = FALSE;
     RtlZeroMemory(&Context->SharedMemoryInfo, sizeof(Context->SharedMemoryInfo));
 }
@@ -108,7 +128,7 @@ static NTSTATUS CreateSharedResources(PWHY_USB_DEVICE_CONTEXT Context)
     maximumSize.QuadPart = sizeof(SharedMemoryContext);
 
     OBJECT_ATTRIBUTES attributes;
-    InitializeObjectAttributes(&attributes, nullptr, 0, nullptr, nullptr);
+    InitializeObjectAttributes(&attributes, nullptr, OBJ_KERNEL_HANDLE, nullptr, nullptr);
 
     NTSTATUS status = ZwCreateSection(
         &Context->SectionHandle,
@@ -149,7 +169,7 @@ static NTSTATUS CreateSharedResources(PWHY_USB_DEVICE_CONTEXT Context)
 
     status = ZwCreateEvent(
         &Context->TxEventHandle,
-        EVENT_MODIFY_STATE | SYNCHRONIZE,
+        EVENT_ALL_ACCESS,
         &attributes,
         SynchronizationEvent,
         FALSE
@@ -159,20 +179,50 @@ static NTSTATUS CreateSharedResources(PWHY_USB_DEVICE_CONTEXT Context)
         return status;
     }
 
+    status = ObReferenceObjectByHandle(
+        Context->TxEventHandle,
+        EVENT_ALL_ACCESS,
+        nullptr,
+        KernelMode,
+        reinterpret_cast<PVOID*>(&Context->TxEvent),
+        nullptr
+    );
+
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
     status = ZwCreateEvent(
         &Context->RxEventHandle,
-        EVENT_MODIFY_STATE | SYNCHRONIZE,
+        EVENT_ALL_ACCESS,
         &attributes,
         SynchronizationEvent,
         FALSE
     );
 
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
+    status = ObReferenceObjectByHandle(
+        Context->RxEventHandle,
+        EVENT_ALL_ACCESS,
+        nullptr,
+        KernelMode,
+        reinterpret_cast<PVOID*>(&Context->RxEvent),
+        nullptr
+    );
+
+    if (NT_SUCCESS(status)) {
+        set_vhci_events(Context->TxEvent, Context->RxEvent);
+    }
+
     return status;
 }
 
-static NTSTATUS EnsureSharedResources(PWHY_USB_DEVICE_CONTEXT Context)
+static NTSTATUS EnsureSharedResources(PWHY_USB_DEVICE_CONTEXT Context, PEPROCESS RequestorProcess)
 {
-    if (!Context) {
+    if (!Context || !RequestorProcess) {
         return STATUS_INVALID_PARAMETER;
     }
 
@@ -191,16 +241,72 @@ static NTSTATUS EnsureSharedResources(PWHY_USB_DEVICE_CONTEXT Context)
         return STATUS_INVALID_DEVICE_STATE;
     }
 
-    Context->SharedMemoryInfo.section_handle = HandleToU64(Context->SectionHandle);
-    Context->SharedMemoryInfo.tx_event_handle = HandleToU64(Context->TxEventHandle);
-    Context->SharedMemoryInfo.rx_event_handle = HandleToU64(Context->RxEventHandle);
+    HANDLE targetProcessHandle = nullptr;
+    status = ObOpenObjectByPointer(
+        RequestorProcess,
+        0,
+        nullptr,
+        0,
+        nullptr,
+        KernelMode,
+        &targetProcessHandle
+    );
+
+    if (!NT_SUCCESS(status)) {
+        CloseSharedResources(Context);
+        return status;
+    }
+
+    HANDLE userSectionHandle = nullptr;
+    HANDLE userTxEventHandle = nullptr;
+    HANDLE userRxEventHandle = nullptr;
+
+    status = ZwDuplicateObject(
+        NtCurrentProcess(),
+        Context->SectionHandle,
+        targetProcessHandle,
+        &userSectionHandle,
+        0,
+        0,
+        DUPLICATE_SAME_ACCESS
+    );
+
+    if (NT_SUCCESS(status)) {
+        status = ZwDuplicateObject(
+            NtCurrentProcess(),
+            Context->TxEventHandle,
+            targetProcessHandle,
+            &userTxEventHandle,
+            0,
+            0,
+            DUPLICATE_SAME_ACCESS
+        );
+    }
+
+    if (NT_SUCCESS(status)) {
+        status = ZwDuplicateObject(
+            NtCurrentProcess(),
+            Context->RxEventHandle,
+            targetProcessHandle,
+            &userRxEventHandle,
+            0,
+            0,
+            DUPLICATE_SAME_ACCESS
+        );
+    }
+
+    ZwClose(targetProcessHandle);
+
+    if (!NT_SUCCESS(status)) {
+        CloseSharedResources(Context);
+        return status;
+    }
+
+    Context->SharedMemoryInfo.section_handle = HandleToU64(userSectionHandle);
+    Context->SharedMemoryInfo.tx_event_handle = HandleToU64(userTxEventHandle);
+    Context->SharedMemoryInfo.rx_event_handle = HandleToU64(userRxEventHandle);
     Context->SharedMemoryReady = TRUE;
 
-    /*
-     * First-pass prototype: handles are created in the IOCTL caller context.
-     * Production hardening should explicitly duplicate handles into the daemon
-     * process and validate requestor identity before returning them.
-     */
     return STATUS_SUCCESS;
 }
 
@@ -296,6 +402,14 @@ EvtIoDeviceControl(
             break;
         }
 
+        PIRP irp = WdfRequestWdmGetIrp(Request);
+        PEPROCESS process = IoGetRequestorProcess(irp);
+        if (context->DaemonProcess) {
+            ObDereferenceObject(context->DaemonProcess);
+        }
+        ObReferenceObject(process);
+        context->DaemonProcess = process;
+
         g_SessionState = WHY_USB_SESSION_OPEN;
         WhyUsbSessionOpenResponse response = {};
         PopulateAbiHeader(&response.header, sizeof(response));
@@ -313,7 +427,15 @@ EvtIoDeviceControl(
         break;
 
     case IOCTL_WHY_USB_GET_SHARED_MEMORY: {
-        NTSTATUS status = EnsureSharedResources(context);
+        PIRP irp = WdfRequestWdmGetIrp(Request);
+        PEPROCESS requestor = IoGetRequestorProcess(irp);
+
+        if (!context->DaemonProcess || requestor != context->DaemonProcess) {
+            WdfRequestCompleteWithInformation(Request, STATUS_ACCESS_DENIED, 0);
+            break;
+        }
+
+        NTSTATUS status = EnsureSharedResources(context, requestor);
         if (!NT_SUCCESS(status)) {
             WdfRequestCompleteWithInformation(Request, status, 0);
             break;
