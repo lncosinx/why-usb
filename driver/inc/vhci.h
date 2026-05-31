@@ -45,6 +45,7 @@ struct SharedMemoryContext;
 int32_t init_vhci_driver();
 void cleanup_vhci_driver();
 void use_external_shared_memory_context(SharedMemoryContext* context);
+void set_vhci_events(void* tx_event, void* rx_event);
 
 // FFI wrappers for ring buffer interaction
 bool tx_ring_pop_frame(uint8_t* dst, size_t max_len, size_t* out_len);

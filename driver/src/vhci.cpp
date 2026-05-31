@@ -1,12 +1,24 @@
 #include "vhci.h"
 #include "ring_buffer.h"
 
+#ifdef _WIN32
+#include <wdm.h>
+#endif
+
 // Do not include standard libraries like iostream or memory
 // as they are not available in the Windows kernel mode context.
 
 // Global context pointer to simulate driver extension
 static SharedMemoryContext* g_SharedMemory = nullptr;
 static bool g_OwnsSharedMemory = false;
+
+static void* g_TxEvent = nullptr;
+static void* g_RxEvent = nullptr;
+
+void set_vhci_events(void* tx_event, void* rx_event) {
+    g_TxEvent = tx_event;
+    g_RxEvent = rx_event;
+}
 
 static void release_owned_shared_memory() {
     if (g_SharedMemory && g_OwnsSharedMemory) {
@@ -97,7 +109,11 @@ bool intercept_urb(const uint8_t* urb_data, size_t length) {
     bool success = g_SharedMemory->tx_ring.push_frame(urb_data, length);
 
     if (success) {
-        // In a real driver, we might signal a KEVENT here to wake up the user-mode process
+#ifdef _WIN32
+        if (g_TxEvent) {
+            KeSetEvent((PKEVENT)g_TxEvent, 0, FALSE);
+        }
+#endif
     }
 
     return success;
@@ -113,5 +129,15 @@ bool mock_driver_pump_once() {
         return false;
     }
 
-    return g_SharedMemory->tx_ring.push_frame(buffer, frame_len);
+    bool success = g_SharedMemory->tx_ring.push_frame(buffer, frame_len);
+
+    if (success) {
+#ifdef _WIN32
+        if (g_TxEvent) {
+            KeSetEvent((PKEVENT)g_TxEvent, 0, FALSE);
+        }
+#endif
+    }
+
+    return success;
 }
